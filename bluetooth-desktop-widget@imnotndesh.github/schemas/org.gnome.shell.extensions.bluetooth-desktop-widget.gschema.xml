@@ -2,9 +2,18 @@
 <schemalist>
   <schema id="org.gnome.shell.extensions.bluetooth-desktop-widget"
           path="/org/gnome/shell/extensions/bluetooth-desktop-widget/">
-    <key name="hide-disconnected" type="b">
-      <default>true</default>
-      <summary>Hide disconnected devices</summary>
+    <key name="widget-style" type="s">
+      <choices>
+        <choice value="list"/>
+        <choice value="circles"/>
+      </choices>
+      <default>"circles"</default>
+      <summary>Widget layout style</summary>
+      <description>
+        "list" shows one row per device with a small battery icon.
+        "circles" shows an iOS-battery-widget-style row of circular
+        percentage rings.
+      </description>
     </key>
   </schema>
 </schemalist>
