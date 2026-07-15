@@ -1,33 +1,3 @@
-/* extension.js
- *
- * Desktop Widgets
- * ----------------
- * A container that holds a stack of independent "desktop widgets"
- * (Bluetooth battery, weather, photos, clock, storage, ...). Which
- * widgets are shown, in what order, and each widget's own settings are
- * all driven by GSettings so prefs.js can be a generic list UI instead
- * of needing custom code per widget.
- *
- * Everything lives in this single file on purpose (no lib/ folder, no
- * external stylesheet), per extensions.gnome.org review requirements
- * about unreachable files.
- *
- * ---------------------------------------------------------------------
- * ADDING A NEW WIDGET
- * ---------------------------------------------------------------------
- * 1. Write a class implementing: build() -> St.Widget actor, refresh(),
- *    destroy(). See BluetoothWidget below for the reference shape.
- * 2. Register it in WIDGET_DEFS with a stable string id, display name,
- *    symbolic icon, and a factory that returns `new YourWidget(this)`.
- * 3. Add a matching entry to WIDGET_CATALOG in prefs.js (id/name/icon)
- *    so it shows up in the enable/reorder list, plus a settings group
- *    there if it needs configuration.
- * 4. If it needs its own settings, add gschema keys namespaced by widget
- *    id (e.g. "weather-api-key") — no changes to widgets-config needed,
- *    that key only tracks enabled/order, not per-widget config.
- * ---------------------------------------------------------------------
- */
-
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -40,10 +10,6 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 const SETTINGS_SCHEMA = 'org.gnome.shell.extensions.bluetooth-desktop-widget';
 const SETTINGS_KEY_WIDGETS_CONFIG = 'widgets-config';
 
-// ======================================================================
-// Shared helpers
-// ======================================================================
-
 function unpackVariantDict(dict) {
     let out = {};
     for (let key in dict)
@@ -51,8 +17,6 @@ function unpackVariantDict(dict) {
     return out;
 }
 
-// Parse the widgets-config JSON, tolerating corruption/empty state by
-// falling back to a sane default rather than throwing.
 function loadWidgetsConfig(settings) {
     let raw = settings.get_string(SETTINGS_KEY_WIDGETS_CONFIG);
     try {
@@ -65,16 +29,12 @@ function loadWidgetsConfig(settings) {
     return [{ id: 'bluetooth', enabled: true }];
 }
 
-// ======================================================================
-// Bluetooth widget (reference implementation)
-// ======================================================================
-
 const BLUEZ_SERVICE = 'org.bluez';
 const OM_IFACE = 'org.freedesktop.DBus.ObjectManager';
 const PROPS_IFACE = 'org.freedesktop.DBus.Properties';
 const DEVICE_IFACE = 'org.bluez.Device1';
 const BATTERY_IFACE = 'org.bluez.Battery1';
-const SETTINGS_KEY_BT_STYLE = 'widget-style'; // "list" | "circles"
+const SETTINGS_KEY_BT_STYLE = 'widget-style';
 
 const ICON_MAP = {
     'audio-headset': 'audio-headphones-symbolic',
@@ -199,9 +159,6 @@ function buildListRow(info) {
     return row;
 }
 
-// A widget class implements: build() -> actor, refresh(), destroy().
-// The container (DesktopWidgetsExtension) owns positioning/layout of the
-// stack; each widget only owns its own internal content.
 class BluetoothWidget {
     constructor(extension) {
         this._extension = extension;
@@ -403,12 +360,6 @@ class BluetoothWidget {
     }
 }
 
-// ======================================================================
-// Widget registry — add new widgets here
-// ======================================================================
-// Each entry: { name, icon, create(extension) -> widget instance }
-// The widget instance must implement build()/refresh()/destroy().
-
 const WIDGET_DEFS = {
     bluetooth: {
         name: 'Bluetooth',
@@ -420,11 +371,6 @@ const WIDGET_DEFS = {
     // clock:   { name: 'Clock',   icon: 'preferences-system-time-symbolic', create: (ext) => new ClockWidget(ext) },
     // storage: { name: 'Storage', icon: 'drive-harddisk-symbolic',     create: (ext) => new StorageWidget(ext) },
 };
-
-// ======================================================================
-// Extension: owns the container, reads widgets-config, instantiates
-// enabled widgets in order, stacks their actors vertically.
-// ======================================================================
 
 export default class DesktopWidgetsExtension extends Extension {
     enable() {
