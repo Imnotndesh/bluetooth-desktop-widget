@@ -660,6 +660,380 @@ class BluetoothWidget {
     }
 }
 
+const CLOCK_SIZE = 90;
+
+class ClockWidget {
+    constructor(extension) {
+        this._extension = extension;
+        this._settings = extension.getSettings(SETTINGS_SCHEMA);
+        this._tickTimeoutId = null;
+    }
+
+    build() {
+        this._card = new St.BoxLayout({
+            vertical: true,
+            reactive: true,
+            style: `
+                background-color: rgba(28, 28, 30, 0.55);
+                border-radius: 20px;
+                border: 1px solid rgba(255,255,255,0.08);
+                padding: 14px;
+                min-width: 260px;
+            `,
+        });
+
+        try {
+            this._card.add_effect(new Shell.BlurEffect({
+                brightness: 0.65,
+                sigma: 40,
+                mode: Shell.BlurMode.BACKGROUND,
+            }));
+        } catch (e) {
+            logError(e, 'Clock widget: blur effect unavailable, using plain translucency');
+        }
+
+        this._card.add_child(new St.Label({
+            text: 'Clock',
+            style: `
+                font-weight: 700;
+                font-size: 15px;
+                color: rgba(255,255,255,0.92);
+                padding-bottom: 8px;
+                padding-left: 4px;
+            `,
+        }));
+
+        let wrap = new St.BoxLayout({ x_align: Clutter.ActorAlign.CENTER, style: 'padding: 4px 0 6px 0;' });
+
+        this._face = new St.DrawingArea({ width: CLOCK_SIZE, height: CLOCK_SIZE });
+        this._face.connect('repaint', (area) => this._paintFace(area));
+        wrap.add_child(this._face);
+        this._card.add_child(wrap);
+
+        this._dateLabel = new St.Label({
+            x_align: Clutter.ActorAlign.CENTER,
+            style: 'color: rgba(255,255,255,0.6); font-size: 12px;',
+        });
+
+        let dateWrap = new St.BoxLayout({ x_align: Clutter.ActorAlign.CENTER });
+        dateWrap.add_child(this._dateLabel);
+        this._card.add_child(dateWrap);
+
+        this._updateDateLabel();
+        this._scheduleTick();
+
+        return this._card;
+    }
+
+    refresh() {
+        this._updateDateLabel();
+        if (this._face)
+            this._face.queue_repaint();
+    }
+
+    destroy() {
+        if (this._tickTimeoutId !== null) {
+            GLib.source_remove(this._tickTimeoutId);
+            this._tickTimeoutId = null;
+        }
+        this._card = null;
+        this._face = null;
+        this._dateLabel = null;
+    }
+
+    _scheduleTick() {
+        // Repaint once a second — cheap for a small cairo face, and keeps
+        // the second hand smooth without any external dependency.
+        this._tickTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+            if (this._face)
+                this._face.queue_repaint();
+            this._updateDateLabel();
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _updateDateLabel() {
+        if (!this._dateLabel)
+            return;
+        let now = GLib.DateTime.new_now_local();
+        this._dateLabel.text = now.format('%a, %b %-d');
+    }
+
+    _paintFace(area) {
+        let cr = area.get_context();
+        let [w, h] = area.get_surface_size();
+        let cx = w / 2;
+        let cy = h / 2;
+        let radius = Math.min(w, h) / 2 - 3;
+
+        // Face
+        cr.setSourceRGBA(1, 1, 1, 0.06);
+        cr.arc(cx, cy, radius, 0, 2 * Math.PI);
+        cr.fill();
+
+        cr.setSourceRGBA(1, 1, 1, 0.18);
+        cr.setLineWidth(1.5);
+        cr.arc(cx, cy, radius, 0, 2 * Math.PI);
+        cr.stroke();
+
+        // Hour ticks
+        for (let i = 0; i < 12; i++) {
+            let angle = (i / 12) * 2 * Math.PI;
+            let outer = radius - 2;
+            let inner = radius - (i % 3 === 0 ? 9 : 5);
+            cr.setSourceRGBA(1, 1, 1, i % 3 === 0 ? 0.55 : 0.3);
+            cr.setLineWidth(i % 3 === 0 ? 2 : 1.2);
+            cr.moveTo(cx + Math.sin(angle) * inner, cy - Math.cos(angle) * inner);
+            cr.lineTo(cx + Math.sin(angle) * outer, cy - Math.cos(angle) * outer);
+            cr.stroke();
+        }
+
+        let now = GLib.DateTime.new_now_local();
+        let hours = now.get_hour() % 12;
+        let minutes = now.get_minute();
+        let seconds = now.get_second();
+
+        let hourAngle = ((hours + minutes / 60) / 12) * 2 * Math.PI;
+        let minuteAngle = ((minutes + seconds / 60) / 60) * 2 * Math.PI;
+        let secondAngle = (seconds / 60) * 2 * Math.PI;
+
+        this._drawHand(cr, cx, cy, hourAngle, radius * 0.5, 3, [1, 1, 1, 0.92]);
+        this._drawHand(cr, cx, cy, minuteAngle, radius * 0.72, 2.2, [1, 1, 1, 0.92]);
+        this._drawHand(cr, cx, cy, secondAngle, radius * 0.8, 1, [0.98, 0.6, 0.25, 0.95]);
+
+        cr.setSourceRGBA(0.98, 0.6, 0.25, 0.95);
+        cr.arc(cx, cy, 2.4, 0, 2 * Math.PI);
+        cr.fill();
+
+        cr.$dispose();
+    }
+
+    _drawHand(cr, cx, cy, angle, length, width, rgba) {
+        cr.setSourceRGBA(rgba[0], rgba[1], rgba[2], rgba[3]);
+        cr.setLineWidth(width);
+        cr.setLineCap(1);
+        cr.moveTo(cx, cy);
+        cr.lineTo(cx + Math.sin(angle) * length, cy - Math.cos(angle) * length);
+        cr.stroke();
+    }
+}
+
+const STORAGE_RING_SIZE = 68;
+const STORAGE_RING_LINE_WIDTH = 5;
+
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes))
+        return '—';
+    let units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024;
+        unitIndex++;
+    }
+    let decimals = value >= 100 || unitIndex === 0 ? 0 : 1;
+    return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+}
+
+class StorageWidget {
+    constructor(extension) {
+        this._extension = extension;
+        this._settings = extension.getSettings(SETTINGS_SCHEMA);
+        this._settingsChangedId = null;
+        this._refreshTimeoutId = null;
+    }
+
+    build() {
+        this._card = new St.BoxLayout({
+            vertical: true,
+            reactive: true,
+            style: `
+                background-color: rgba(28, 28, 30, 0.55);
+                border-radius: 20px;
+                border: 1px solid rgba(255,255,255,0.08);
+                padding: 14px;
+                min-width: 260px;
+            `,
+        });
+
+        try {
+            this._card.add_effect(new Shell.BlurEffect({
+                brightness: 0.65,
+                sigma: 40,
+                mode: Shell.BlurMode.BACKGROUND,
+            }));
+        } catch (e) {
+            logError(e, 'Storage widget: blur effect unavailable, using plain translucency');
+        }
+
+        this._card.add_child(new St.Label({
+            text: 'Storage',
+            style: `
+                font-weight: 700;
+                font-size: 15px;
+                color: rgba(255,255,255,0.92);
+                padding-bottom: 8px;
+                padding-left: 4px;
+            `,
+        }));
+
+        this._contentBox = new St.Widget({ layout_manager: new Clutter.BinLayout() });
+        this._card.add_child(this._contentBox);
+
+        this._statusLabel = new St.Label({
+            text: 'Loading…',
+            style: 'color: rgba(255,255,255,0.5); font-size: 13px; padding: 6px 4px;',
+        });
+        this._card.add_child(this._statusLabel);
+
+        this._settingsChangedId = this._settings.connect(
+            'changed::storage-mount-path',
+            () => this.refresh()
+        );
+
+        this.refresh();
+        this._refreshTimeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 60, () => {
+            this.refresh();
+            return GLib.SOURCE_CONTINUE;
+        });
+
+        return this._card;
+    }
+
+    refresh() {
+        try {
+            this._refreshFromDisk();
+        } catch (e) {
+            logError(e, 'Storage widget: refresh failed');
+            this._showStatus('Unable to read filesystem info');
+        }
+    }
+
+    destroy() {
+        if (this._settingsChangedId !== null) {
+            this._settings.disconnect(this._settingsChangedId);
+            this._settingsChangedId = null;
+        }
+        if (this._refreshTimeoutId !== null) {
+            GLib.source_remove(this._refreshTimeoutId);
+            this._refreshTimeoutId = null;
+        }
+        this._card = null;
+        this._contentBox = null;
+        this._statusLabel = null;
+    }
+
+    _showStatus(text) {
+        if (!this._statusLabel)
+            return;
+        this._contentBox.hide();
+        this._statusLabel.text = text;
+        this._statusLabel.show();
+    }
+
+    _refreshFromDisk() {
+        let path = this._settings.get_string('storage-mount-path') || '/';
+        let file = Gio.File.new_for_path(path);
+
+        let info = file.query_filesystem_info(
+            'filesystem::size,filesystem::free',
+            null
+        );
+
+        let total = info.get_attribute_uint64('filesystem::size');
+        let free = info.get_attribute_uint64('filesystem::free');
+        let used = total - free;
+        let usedFraction = total > 0 ? used / total : 0;
+
+        this._renderStorage({ path, total, free, used, usedFraction });
+    }
+
+    _renderStorage(data) {
+        if (!this._contentBox)
+            return;
+
+        this._statusLabel.hide();
+        this._contentBox.show();
+        this._contentBox.destroy_all_children();
+
+        let cell = new St.BoxLayout({
+            vertical: true,
+            x_align: Clutter.ActorAlign.CENTER,
+            style: 'spacing: 6px; padding: 4px 10px;',
+        });
+
+        let ringContainer = new St.Widget({
+            layout_manager: new Clutter.BinLayout(),
+            width: STORAGE_RING_SIZE,
+            height: STORAGE_RING_SIZE,
+        });
+
+        let area = new St.DrawingArea({ width: STORAGE_RING_SIZE, height: STORAGE_RING_SIZE });
+        area.connect('repaint', (a) => {
+            let cr = a.get_context();
+            let [w, h] = a.get_surface_size();
+            let cx = w / 2;
+            let cy = h / 2;
+            let radius = Math.min(w, h) / 2 - STORAGE_RING_LINE_WIDTH / 2 - 1;
+
+            cr.setSourceRGBA(1, 1, 1, 0.15);
+            cr.setLineWidth(STORAGE_RING_LINE_WIDTH);
+            cr.arc(cx, cy, radius, 0, 2 * Math.PI);
+            cr.stroke();
+
+            let fraction = Math.max(0, Math.min(1, data.usedFraction));
+            let startAngle = -Math.PI / 2;
+            let endAngle = startAngle + fraction * 2 * Math.PI;
+
+            if (fraction < 0.7)
+                cr.setSourceRGBA(0.20, 0.84, 0.29, 1);
+            else if (fraction < 0.9)
+                cr.setSourceRGBA(0.95, 0.70, 0.15, 1);
+            else
+                cr.setSourceRGBA(0.92, 0.26, 0.21, 1);
+
+            cr.setLineWidth(STORAGE_RING_LINE_WIDTH);
+            cr.setLineCap(0);
+            cr.arc(cx, cy, radius, startAngle, endAngle);
+            cr.stroke();
+
+            cr.$dispose();
+        });
+
+        let icon = new St.Icon({
+            icon_name: 'drive-harddisk-symbolic',
+            icon_size: 22,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+            style: 'color: rgba(255,255,255,0.92);',
+        });
+
+        ringContainer.add_child(area);
+        ringContainer.add_child(icon);
+        cell.add_child(ringContainer);
+
+        cell.add_child(new St.Label({
+            text: `${Math.round(data.usedFraction * 100)}% used`,
+            x_align: Clutter.ActorAlign.CENTER,
+            style: 'color: rgba(255,255,255,0.92); font-size: 15px; font-weight: 500;',
+        }));
+
+        cell.add_child(new St.Label({
+            text: `${formatBytes(data.free)} free of ${formatBytes(data.total)}`,
+            x_align: Clutter.ActorAlign.CENTER,
+            style: 'color: rgba(255,255,255,0.6); font-size: 12px;',
+        }));
+
+        cell.add_child(new St.Label({
+            text: data.path,
+            x_align: Clutter.ActorAlign.CENTER,
+            style: 'color: rgba(255,255,255,0.45); font-size: 11px; padding-top: 2px;',
+        }));
+
+        this._contentBox.add_child(cell);
+    }
+}
+
 const WIDGET_DEFS = {
     bluetooth: {
         name: 'Bluetooth',
@@ -671,9 +1045,17 @@ const WIDGET_DEFS = {
         icon: 'weather-few-clouds-symbolic',
         create: (extension) => new WeatherWidget(extension),
     },
+    clock: {
+        name: 'Analog Clock',
+        icon: 'preferences-system-time-symbolic',
+        create: (extension) => new ClockWidget(extension),
+    },
+    storage: {
+        name: 'Storage',
+        icon: 'drive-harddisk-symbolic',
+        create: (extension) => new StorageWidget(extension),
+    },
     // photos:  { name: 'Photos',  icon: 'image-x-generic-symbolic',    create: (ext) => new PhotosWidget(ext) },
-    // clock:   { name: 'Clock',   icon: 'preferences-system-time-symbolic', create: (ext) => new ClockWidget(ext) },
-    // storage: { name: 'Storage', icon: 'drive-harddisk-symbolic',     create: (ext) => new StorageWidget(ext) },
 };
 
 export default class DesktopWidgetsExtension extends Extension {
