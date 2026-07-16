@@ -4,6 +4,7 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Shell from 'gi://Shell';
 import Soup from 'gi://Soup?version=3.0';
+import Secret from 'gi://Secret';
 
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -67,6 +68,92 @@ function fetchJson(url) {
                     }
                     let text = new TextDecoder('utf-8').decode(bytes.get_data());
                     resolve(JSON.parse(text));
+                } catch (e) {
+                    reject(e);
+                }
+            }
+        );
+    });
+}
+
+const PHOTOS_SECRET_SCHEMA = new Secret.Schema(
+    'org.gnome.shell.extensions.bluetooth-desktop-widget.photos',
+    Secret.SchemaFlags.NONE,
+    { 'instance-url': Secret.SchemaAttributeType.STRING }
+);
+
+function lookupApiKey(instanceUrl) {
+    return new Promise((resolve) => {
+        if (!instanceUrl) {
+            resolve(null);
+            return;
+        }
+        Secret.password_lookup(
+            PHOTOS_SECRET_SCHEMA,
+            { 'instance-url': instanceUrl },
+            null,
+            (source, result) => {
+                let apiKey = null;
+                try {
+                    apiKey = Secret.password_lookup_finish(result);
+                } catch (e) {
+                    logError(e, 'Desktop Widgets: failed to look up Immich API key');
+                }
+                resolve(apiKey);
+            }
+        );
+    });
+}
+
+function fetchJsonAuth(url, apiKey) {
+    return new Promise((resolve, reject) => {
+        let message = Soup.Message.new('GET', url);
+        if (!message) {
+            reject(new Error(`Invalid URL: ${url}`));
+            return;
+        }
+        message.request_headers.append('x-api-key', apiKey);
+
+        getHttpSession().send_and_read_async(
+            message, GLib.PRIORITY_DEFAULT, null,
+            (session, result) => {
+                try {
+                    let bytes = session.send_and_read_finish(result);
+                    let status = message.get_status();
+                    if (status !== Soup.Status.OK) {
+                        reject(new Error(`HTTP ${status}`));
+                        return;
+                    }
+                    let text = new TextDecoder('utf-8').decode(bytes.get_data());
+                    resolve(JSON.parse(text));
+                } catch (e) {
+                    reject(e);
+                }
+            }
+        );
+    });
+}
+
+function fetchBytesAuth(url, apiKey) {
+    return new Promise((resolve, reject) => {
+        let message = Soup.Message.new('GET', url);
+        if (!message) {
+            reject(new Error(`Invalid URL: ${url}`));
+            return;
+        }
+        message.request_headers.append('x-api-key', apiKey);
+
+        getHttpSession().send_and_read_async(
+            message, GLib.PRIORITY_DEFAULT, null,
+            (session, result) => {
+                try {
+                    let bytes = session.send_and_read_finish(result);
+                    let status = message.get_status();
+                    if (status !== Soup.Status.OK) {
+                        reject(new Error(`HTTP ${status}`));
+                        return;
+                    }
+                    resolve(bytes);
                 } catch (e) {
                     reject(e);
                 }
@@ -1034,6 +1121,212 @@ class StorageWidget {
     }
 }
 
+const PHOTOS_SLIDE_INTERVAL_SECONDS = 20;
+
+class PhotosWidget {
+    constructor(extension) {
+        this._extension = extension;
+        this._settings = extension.getSettings(SETTINGS_SCHEMA);
+        this._settingsChangedIds = [];
+        this._slideTimeoutId = null;
+        this._apiKey = null;
+        this._instanceUrl = null;
+        this._assetIds = [];
+        this._assetIndex = 0;
+        this._destroyed = false;
+        this._loadToken = 0;
+    }
+
+    build() {
+        this._card = new St.BoxLayout({
+            vertical: true,
+            reactive: true,
+            style: `
+                background-color: rgba(28, 28, 30, 0.55);
+                border-radius: 20px;
+                border: 1px solid rgba(255,255,255,0.08);
+                padding: 14px;
+                min-width: 260px;
+            `,
+        });
+
+        try {
+            this._card.add_effect(new Shell.BlurEffect({
+                brightness: 0.65,
+                sigma: 40,
+                mode: Shell.BlurMode.BACKGROUND,
+            }));
+        } catch (e) {
+            logError(e, 'Photos widget: blur effect unavailable, using plain translucency');
+        }
+
+        this._card.add_child(new St.Label({
+            text: 'Photos',
+            style: `
+                font-weight: 700;
+                font-size: 15px;
+                color: rgba(255,255,255,0.92);
+                padding-bottom: 8px;
+                padding-left: 4px;
+            `,
+        }));
+
+        this._imageBin = new St.Widget({
+            layout_manager: new Clutter.BinLayout(),
+            width: 232,
+            height: 180,
+            style: 'border-radius: 12px;',
+            clip_to_allocation: true,
+        });
+
+        this._icon = new St.Icon({
+            icon_size: 180,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._imageBin.add_child(this._icon);
+
+        let imageWrap = new St.BoxLayout({ x_align: Clutter.ActorAlign.CENTER });
+        imageWrap.add_child(this._imageBin);
+        this._card.add_child(imageWrap);
+
+        this._captionLabel = new St.Label({
+            x_align: Clutter.ActorAlign.CENTER,
+            style: 'color: rgba(255,255,255,0.6); font-size: 12px; padding-top: 8px;',
+        });
+        let captionWrap = new St.BoxLayout({ x_align: Clutter.ActorAlign.CENTER });
+        captionWrap.add_child(this._captionLabel);
+        this._card.add_child(captionWrap);
+
+        this._statusLabel = new St.Label({
+            text: 'Loading…',
+            style: 'color: rgba(255,255,255,0.5); font-size: 13px; padding: 6px 4px;',
+        });
+        this._card.add_child(this._statusLabel);
+
+        for (let key of ['photos-album-id', 'photos-instance-url']) {
+            this._settingsChangedIds.push(
+                this._settings.connect(`changed::${key}`, () => this.refresh())
+            );
+        }
+
+        this.refresh();
+
+        return this._card;
+    }
+
+    refresh() {
+        this._loadAlbum().catch((e) => {
+            if (this._destroyed)
+                return;
+            logError(e, 'Photos widget: failed to load album');
+            this._showStatus('Unable to reach Immich server');
+        });
+    }
+
+    destroy() {
+        this._destroyed = true;
+
+        for (let id of this._settingsChangedIds)
+            this._settings.disconnect(id);
+        this._settingsChangedIds = [];
+
+        if (this._slideTimeoutId !== null) {
+            GLib.source_remove(this._slideTimeoutId);
+            this._slideTimeoutId = null;
+        }
+
+        this._card = null;
+        this._imageBin = null;
+        this._icon = null;
+        this._captionLabel = null;
+        this._statusLabel = null;
+    }
+
+    async _loadAlbum() {
+        let token = ++this._loadToken;
+
+        let url = this._settings.get_string('photos-instance-url').trim().replace(/\/+$/, '');
+        let albumId = this._settings.get_string('photos-album-id');
+
+        if (!url || !albumId) {
+            this._showStatus('No album selected — pick one in extension preferences');
+            return;
+        }
+
+        let apiKey = await lookupApiKey(url);
+        if (token !== this._loadToken || this._destroyed)
+            return;
+
+        if (!apiKey) {
+            this._showStatus('No API key found — reconnect in extension preferences');
+            return;
+        }
+
+        this._instanceUrl = url;
+        this._apiKey = apiKey;
+
+        let album = await fetchJsonAuth(`${url}/api/albums/${albumId}`, apiKey);
+        if (token !== this._loadToken || this._destroyed)
+            return;
+
+        this._assetIds = (album.assets || []).map((a) => a.id);
+        this._assetIndex = 0;
+
+        if (this._captionLabel)
+            this._captionLabel.text = album.albumName || '';
+
+        if (this._assetIds.length === 0) {
+            this._showStatus('This album has no photos');
+            return;
+        }
+
+        this._showNextPhoto();
+        this._scheduleSlideshow();
+    }
+
+    _scheduleSlideshow() {
+        if (this._slideTimeoutId !== null) {
+            GLib.source_remove(this._slideTimeoutId);
+            this._slideTimeoutId = null;
+        }
+        this._slideTimeoutId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT, PHOTOS_SLIDE_INTERVAL_SECONDS,
+            () => {
+                this._showNextPhoto();
+                return GLib.SOURCE_CONTINUE;
+            }
+        );
+    }
+
+    _showNextPhoto() {
+        if (this._assetIds.length === 0)
+            return;
+
+        let assetId = this._assetIds[this._assetIndex];
+        this._assetIndex = (this._assetIndex + 1) % this._assetIds.length;
+
+        let url = `${this._instanceUrl}/api/assets/${assetId}/thumbnail?size=preview`;
+        fetchBytesAuth(url, this._apiKey).then((bytes) => {
+            if (this._destroyed || !this._icon)
+                return;
+            this._statusLabel.hide();
+            this._imageBin.show();
+            this._icon.gicon = Gio.BytesIcon.new(bytes);
+        }).catch((e) => {
+            logError(e, 'Photos widget: failed to load thumbnail');
+        });
+    }
+
+    _showStatus(text) {
+        if (!this._statusLabel)
+            return;
+        this._imageBin.hide();
+        this._statusLabel.text = text;
+        this._statusLabel.show();
+    }
+}
+
 const WIDGET_DEFS = {
     bluetooth: {
         name: 'Bluetooth',
@@ -1055,7 +1348,11 @@ const WIDGET_DEFS = {
         icon: 'drive-harddisk-symbolic',
         create: (extension) => new StorageWidget(extension),
     },
-    // photos:  { name: 'Photos',  icon: 'image-x-generic-symbolic',    create: (ext) => new PhotosWidget(ext) },
+    photos: {
+        name: 'Photos',
+        icon: 'image-x-generic-symbolic',
+        create: (extension) => new PhotosWidget(extension),
+    },
 };
 
 export default class DesktopWidgetsExtension extends Extension {
