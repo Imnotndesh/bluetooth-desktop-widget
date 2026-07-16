@@ -1173,18 +1173,11 @@ class PhotosWidget {
 
         this._imageBin = new St.Widget({
             layout_manager: new Clutter.BinLayout(),
-            width: 232,
-            height: 180,
-            style: 'border-radius: 12px;',
+            width: 248,
+            height: 172,
+            style: 'border-radius: 12px; background-color: rgba(0,0,0,0.2); background-size: cover; background-position: center;',
             clip_to_allocation: true,
         });
-
-        this._icon = new St.Icon({
-            icon_size: 180,
-            x_align: Clutter.ActorAlign.CENTER,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._imageBin.add_child(this._icon);
 
         let imageWrap = new St.BoxLayout({ x_align: Clutter.ActorAlign.CENTER });
         imageWrap.add_child(this._imageBin);
@@ -1238,7 +1231,6 @@ class PhotosWidget {
 
         this._card = null;
         this._imageBin = null;
-        this._icon = null;
         this._captionLabel = null;
         this._statusLabel = null;
     }
@@ -1308,14 +1300,41 @@ class PhotosWidget {
 
         let url = `${this._instanceUrl}/api/assets/${assetId}/thumbnail?size=preview`;
         fetchBytesAuth(url, this._apiKey).then((bytes) => {
-            if (this._destroyed || !this._icon)
+            if (this._destroyed || !this._imageBin)
                 return;
+
+            let path = this._cacheFileForAsset(assetId);
+            try {
+                let file = Gio.File.new_for_path(path);
+                file.replace_contents(
+                    bytes.get_data(), null, false,
+                    Gio.FileCreateFlags.REPLACE_DESTINATION, null
+                );
+            } catch (e) {
+                logError(e, 'Photos widget: failed to cache thumbnail to disk');
+                return;
+            }
+
             this._statusLabel.hide();
             this._imageBin.show();
-            this._icon.gicon = Gio.BytesIcon.new(bytes);
+            this._imageBin.style = `
+                border-radius: 12px;
+                background-size: cover;
+                background-position: center;
+                background-image: url("file://${path}");
+            `;
         }).catch((e) => {
             logError(e, 'Photos widget: failed to load thumbnail');
         });
+    }
+
+    _cacheFileForAsset(assetId) {
+        let dir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'bluetooth-desktop-widget', 'photos']);
+        GLib.mkdir_with_parents(dir, 0o700);
+        // Reuse one file per position in the rotation (rather than per asset)
+        // so the on-disk cache doesn't grow unboundedly for large albums.
+        let slot = this._assetIndex % 6;
+        return GLib.build_filenamev([dir, `thumb-${slot}-${assetId}.jpg`]);
     }
 
     _showStatus(text) {
@@ -1355,24 +1374,36 @@ const WIDGET_DEFS = {
     },
 };
 
+const LAYOUT_SETTINGS_KEYS = [
+    'container-anchor',
+    'container-margin-x',
+    'container-margin-y',
+    'widget-spacing',
+    'column-spacing',
+];
+
 export default class DesktopWidgetsExtension extends Extension {
     enable() {
         this._settings = this.getSettings(SETTINGS_SCHEMA);
         this._activeWidgets = []; // [{ id, instance }]
 
-        this._container = new St.BoxLayout({
-            vertical: true,
-            style: 'spacing: 14px;',
-        });
-
-        Main.layoutManager._backgroundGroup.add_child(this._container);
-        this._container.set_position(
-            Main.layoutManager.primaryMonitor.width - 320,
-            60
-        );
+        // this._columnsBox holds one or more vertical columns; a column
+        // overflows into a new one once its stacked widgets would run past
+        // the bottom of the usable screen area.
+        this._columnsBox = new St.BoxLayout({ vertical: false });
+        Main.layoutManager._backgroundGroup.add_child(this._columnsBox);
 
         this._configChangedId = this._settings.connect(
             `changed::${SETTINGS_KEY_WIDGETS_CONFIG}`,
+            () => this._rebuildWidgets()
+        );
+
+        this._layoutChangedIds = LAYOUT_SETTINGS_KEYS.map((key) =>
+            this._settings.connect(`changed::${key}`, () => this._rebuildWidgets())
+        );
+
+        this._monitorsChangedId = Main.layoutManager.connect(
+            'monitors-changed',
             () => this._rebuildWidgets()
         );
 
@@ -1385,13 +1416,22 @@ export default class DesktopWidgetsExtension extends Extension {
             this._configChangedId = null;
         }
 
+        for (let id of this._layoutChangedIds || [])
+            this._settings.disconnect(id);
+        this._layoutChangedIds = [];
+
+        if (this._monitorsChangedId !== null) {
+            Main.layoutManager.disconnect(this._monitorsChangedId);
+            this._monitorsChangedId = null;
+        }
+
         this._destroyWidgets();
         destroyHttpSession();
 
-        if (this._container) {
-            Main.layoutManager._backgroundGroup.remove_child(this._container);
-            this._container.destroy();
-            this._container = null;
+        if (this._columnsBox) {
+            Main.layoutManager._backgroundGroup.remove_child(this._columnsBox);
+            this._columnsBox.destroy();
+            this._columnsBox = null;
         }
 
         this._settings = null;
@@ -1406,14 +1446,27 @@ export default class DesktopWidgetsExtension extends Extension {
             }
         }
         this._activeWidgets = [];
-        if (this._container)
-            this._container.destroy_all_children();
+        if (this._columnsBox)
+            this._columnsBox.destroy_all_children();
     }
 
     _rebuildWidgets() {
         this._destroyWidgets();
 
+        let widgetSpacing = this._settings.get_int('widget-spacing');
+        let columnSpacing = this._settings.get_int('column-spacing');
+        let marginX = this._settings.get_int('container-margin-x');
+        let marginY = this._settings.get_int('container-margin-y');
+        let anchor = this._settings.get_string('container-anchor');
+
+        let monitor = Main.layoutManager.primaryMonitor;
+        let maxColumnHeight = Math.max(100, monitor.height - marginY * 2);
+
+        this._columnsBox.set_style(`spacing: ${columnSpacing}px;`);
+
         let config = loadWidgetsConfig(this._settings);
+        let currentColumn = null;
+        let currentColumnHeight = 0;
 
         for (let entry of config) {
             if (!entry.enabled)
@@ -1434,8 +1487,37 @@ export default class DesktopWidgetsExtension extends Extension {
                 continue;
             }
 
-            this._container.add_child(actor);
+            let [, naturalHeight] = actor.get_preferred_height(-1);
+            let addedHeight = naturalHeight + (currentColumn && currentColumn.get_n_children() > 0 ? widgetSpacing : 0);
+
+            if (!currentColumn || currentColumnHeight + addedHeight > maxColumnHeight) {
+                currentColumn = new St.BoxLayout({
+                    vertical: true,
+                    style: `spacing: ${widgetSpacing}px;`,
+                });
+                this._columnsBox.add_child(currentColumn);
+                currentColumnHeight = 0;
+                addedHeight = naturalHeight;
+            }
+
+            currentColumn.add_child(actor);
+            currentColumnHeight += addedHeight;
             this._activeWidgets.push({ id: entry.id, instance });
         }
+
+        this._positionColumns(monitor, anchor, marginX, marginY);
+    }
+
+    _positionColumns(monitor, anchor, marginX, marginY) {
+        let [, , naturalWidth, naturalHeight] = this._columnsBox.get_preferred_size();
+
+        let x = anchor.endsWith('right')
+            ? monitor.width - marginX - naturalWidth
+            : marginX;
+        let y = anchor.startsWith('bottom')
+            ? monitor.height - marginY - naturalHeight
+            : marginY;
+
+        this._columnsBox.set_position(monitor.x + x, monitor.y + y);
     }
 }

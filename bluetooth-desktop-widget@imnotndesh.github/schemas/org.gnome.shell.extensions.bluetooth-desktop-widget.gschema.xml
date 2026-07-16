@@ -3,6 +3,14 @@
   <schema id="org.gnome.shell.extensions.bluetooth-desktop-widget"
           path="/org/gnome/shell/extensions/bluetooth-desktop-widget/">
 
+    <!-- Generic widget registry: which widgets exist, in what order, and
+         whether each is enabled. Stored as a JSON string so we don't need
+         to touch the schema every time a widget is added/removed — new
+         widget kinds just need an entry in extension.js's WIDGET_DEFS and
+         prefs.js's WIDGET_CATALOG.
+
+         Shape: [{ "id": "bluetooth", "enabled": true }, ...]
+         Order in the array = display order (top to bottom). -->
     <key name="widgets-config" type="s">
       <default>'[{"id":"bluetooth","enabled":true}]'</default>
       <summary>Enabled widgets and their order</summary>
@@ -13,6 +21,11 @@
       </description>
     </key>
 
+    <!-- Per-widget settings below. Each widget that needs configuration
+         gets its own key (or its own JSON blob if it has several
+         settings), namespaced by widget id so there's no collision. -->
+
+    <!-- Bluetooth widget -->
     <key name="widget-style" type="s">
       <choices>
         <choice value="list"/>
@@ -39,6 +52,9 @@
       <description>City name or lat,lon used to query the weather API.</description>
     </key>
 
+    <!-- Photos widget (Immich). Note: the API key is NOT stored here — it's
+         saved in the system keyring (libsecret) via extension.js/prefs.js,
+         keyed by instance URL, so it never sits in plaintext dconf. -->
     <key name="photos-instance-url" type="s">
       <default>''</default>
       <summary>Immich instance URL</summary>
@@ -56,6 +72,42 @@
     <key name="storage-mount-path" type="s">
       <default>'/'</default>
       <summary>Filesystem path to report storage usage for</summary>
+    </key>
+
+    <!-- Desktop container layout: which corner of the monitor the widget
+         stack anchors to, how far it sits from the screen edges, the gap
+         between stacked widgets, and — once a column's height would
+         exceed the available screen height — the gap before it overflows
+         into an additional column next to it. -->
+    <key name="container-anchor" type="s">
+      <choices>
+        <choice value="top-left"/>
+        <choice value="top-right"/>
+        <choice value="bottom-left"/>
+        <choice value="bottom-right"/>
+      </choices>
+      <default>"top-right"</default>
+      <summary>Screen corner the widget stack anchors to</summary>
+    </key>
+    <key name="container-margin-x" type="i">
+      <range min="0" max="400"/>
+      <default>60</default>
+      <summary>Horizontal margin from the screen edge, in pixels</summary>
+    </key>
+    <key name="container-margin-y" type="i">
+      <range min="0" max="400"/>
+      <default>60</default>
+      <summary>Vertical margin from the screen edge, in pixels</summary>
+    </key>
+    <key name="widget-spacing" type="i">
+      <range min="0" max="60"/>
+      <default>14</default>
+      <summary>Vertical spacing between stacked widgets, in pixels</summary>
+    </key>
+    <key name="column-spacing" type="i">
+      <range min="0" max="80"/>
+      <default>20</default>
+      <summary>Horizontal spacing between overflow columns, in pixels</summary>
     </key>
 
   </schema>
