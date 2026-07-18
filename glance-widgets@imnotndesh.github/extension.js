@@ -592,6 +592,7 @@ class WeatherWidget {
         this._contentBox = null;
         this._statusLabel = null;
         this._headerLabel = null;
+        this._settings = null; 
     }
 
     _scheduleAutoRefresh() {
@@ -796,6 +797,7 @@ class BluetoothWidget {
         this._card = null;
         this._contentBox = null;
         this._emptyLabel = null;
+        this._settings = null; 
     }
 
     _redraw() {
@@ -995,6 +997,7 @@ class ClockWidget {
         this._card = null;
         this._face = null;
         this._dateLabel = null;
+        this._settings = null; 
     }
 
     _scheduleTick() {
@@ -1175,6 +1178,7 @@ class StorageWidget {
         this._card = null;
         this._contentBox = null;
         this._statusLabel = null;
+        this._settings = null; 
     }
 
     _showStatus(text) {
@@ -1406,6 +1410,7 @@ class PhotosWidget {
         this._imageBin = null;
         this._captionLabel = null;
         this._statusLabel = null;
+        this._settings = null; 
     }
 
     async _loadAlbum() {
@@ -1674,6 +1679,7 @@ class NowPlayingWidget {
         this._prevButton = null;
         this._playPauseButton = null;
         this._nextButton = null;
+        this._settings = null; 
     }
 
     _makeControlButton(iconName) {
@@ -2002,6 +2008,7 @@ class QuickTogglesWidget {
         this._dndButton = null;
         this._nightLightButton = null;
         this._darkModeButton = null;
+        this._settings = null; 
     }
 
     _makeToggleButton(iconName, accessibleName) {
@@ -2119,6 +2126,7 @@ class GithubPRWidget {
         this._card = null;
         this._contentBox = null;
         this._statusLabel = null;
+        this._settings = null; 
     }
 
     _buildStatRow(iconName, label) {
@@ -2301,6 +2309,7 @@ class GithubHeatmapWidget {
         this._area = null;
         this._captionLabel = null;
         this._statusLabel = null;
+        this._settings = null; 
     }
 
     async _load() {
@@ -2452,6 +2461,7 @@ class CalendarWidget {
         this._card = null;
         this._headerLabel = null;
         this._grid = null;
+        this._settings = null; 
     }
 
     _daysInMonth(year, month) {
@@ -2612,6 +2622,7 @@ class QuickLaunchWidget {
         }
         this._card = null;
         this._grid = null;
+        this._settings = null; 
     }
 
     _loadPinnedIds() {
