@@ -11,10 +11,21 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 const SETTINGS_SCHEMA = 'org.gnome.shell.extensions.glance-widgets';
 const SETTINGS_KEY_WIDGETS_CONFIG = 'widgets-config';
 
+function unwrapVariant(value) {
+    // GVariant values nested inside a dict-of-variants (a{sv}) sometimes need
+    // more than one deep_unpack() call to reach a plain JS value — e.g. MPRIS
+    // Metadata is itself a variant wrapping *another* dict of variants
+    // (xesam:title, xesam:artist, ...). Keep unwrapping until we hit a plain
+    // value instead of assuming a fixed nesting depth.
+    while (value && typeof value.deep_unpack === 'function')
+        value = value.deep_unpack();
+    return value;
+}
+
 function unpackVariantDict(dict) {
     let out = {};
     for (let key in dict)
-        out[key] = dict[key].deep_unpack();
+        out[key] = unwrapVariant(dict[key]);
     return out;
 }
 
@@ -275,7 +286,9 @@ function fetchGithubGraphQL(query, variables, token) {
         message.request_headers.append('Authorization', `Bearer ${token}`);
         message.request_headers.append('Accept', 'application/vnd.github+json');
         message.request_headers.append('User-Agent', 'glance-widgets-gnome-extension');
-        message.set_request_body_from_bytes('application/json', new GLib.Bytes(new TextEncoder().encode(body)));
+
+        let body = JSON.stringify({ query, variables });
+        message.set_request_body_from_bytes('application/json', GLib.Bytes.new(new TextEncoder().encode(body)));
 
         getHttpSession().send_and_read_async(
             message, GLib.PRIORITY_DEFAULT, null,
@@ -1679,13 +1692,19 @@ class NowPlayingWidget {
     }
 
     _makeControlButton(iconName) {
-        return new St.Button({
+        let icon = new St.Icon({ icon_name: iconName, icon_size: 16, style: 'color: rgba(255,255,255,0.9);' });
+        let button = new St.Button({
             reactive: true,
             can_focus: true,
             track_hover: true,
             style: 'border-radius: 999px; padding: 8px; background-color: rgba(255,255,255,0.08);',
-            child: new St.Icon({ icon_name: iconName, icon_size: 16, style: 'color: rgba(255,255,255,0.9);' }),
+            child: icon,
         });
+        // Stashed directly rather than read back via button.child later —
+        // more reliable across St.Button internals than relying on the
+        // child-property round trip.
+        button._icon = icon;
+        return button;
     }
 
     _setControlsSensitive(sensitive) {
@@ -1818,7 +1837,7 @@ class NowPlayingWidget {
                 return;
 
             let props = unpackVariantDict(result.deep_unpack()[0]);
-            let metadata = props.Metadata || {};
+            let metadata = unpackVariantDict(props.Metadata || {});
             let title = metadata['xesam:title'] || 'Unknown title';
             let artistField = metadata['xesam:artist'];
             let artist = Array.isArray(artistField) ? artistField.join(', ') : (artistField || '');
@@ -1827,6 +1846,7 @@ class NowPlayingWidget {
 
             this._render({ title, artist, artUrl, status, busName });
         } catch (e) {
+            logError(e, 'Now Playing widget: failed to parse player metadata');
             this._renderNothingPlaying();
         }
     }
@@ -1838,7 +1858,7 @@ class NowPlayingWidget {
         this._setControlsSensitive(true);
         this._titleLabel.text = data.title;
         this._artistLabel.text = data.artist;
-        this._playPauseButton.child.icon_name = data.status === 'Playing'
+        this._playPauseButton._icon.icon_name = data.status === 'Playing'
             ? 'media-playback-pause-symbolic' : 'media-playback-start-symbolic';
 
         this._applyArt(data.artUrl);
@@ -2106,7 +2126,7 @@ class GithubPRWidget {
             if (this._destroyed)
                 return;
             logError(e, 'GitHub PRs widget: failed to load');
-            this._showStatus('Unable to reach GitHub');
+            this._showStatus(`Unable to reach GitHub: ${e.message}`);
         });
     }
 
@@ -2287,7 +2307,7 @@ class GithubHeatmapWidget {
             if (this._destroyed)
                 return;
             logError(e, 'GitHub Heatmap widget: failed to load');
-            this._showStatus('Unable to reach GitHub');
+            this._showStatus(`Unable to reach GitHub: ${e.message}`);
         });
     }
 
