@@ -1998,7 +1998,6 @@ class QuickTogglesWidget {
 
         return this._card;
     }
-
     destroy() {
         for (let [settingsObj, id] of this._signalIds)
             settingsObj.disconnect(id);
@@ -2008,8 +2007,11 @@ class QuickTogglesWidget {
         this._dndButton = null;
         this._nightLightButton = null;
         this._darkModeButton = null;
-        this._settings = null; 
+        this._notifSettings = null;
+        this._colorSettings = null;
+        this._interfaceSettings = null;
     }
+
 
     _makeToggleButton(iconName, accessibleName) {
         return new St.Button({
