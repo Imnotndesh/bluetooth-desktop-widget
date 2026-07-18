@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Extracted version: ${VERSION}"
+
+      - name: Update version-name in metadata.json
+        run: |
+          METADATA="glance-widgets@imnotndesh.github/metadata.json"
+          if [[ -f "$METADATA" ]]; then
+            sed -i 's/"version-name"[[:space:]]*:[[:space:]]*"[^"]*"/"version-name": "'"${{ steps.version.outputs.version }}"'"/' "$METADATA"
+            echo "Updated version-name to ${{ steps.version.outputs.version }} in metadata.json"
+          else
+            echo "ERROR: metadata.json not found at $METADATA"
+            exit 1
+          fi
+
+      - name: Create extension archive
+        id: archive
+        run: |
+          FOLDER="glance-widgets@imnotndesh.github"
+          VERSION="${{ steps.version.outputs.version }}"
+          ARCHIVE="glance-widgets@imnotndesh.github.v${VERSION}.zip"
+
+          if [[ ! -d "$FOLDER" ]]; then
+            echo "ERROR: Extension folder '$FOLDER' not found."
+            exit 1
+          fi
+
+          zip -r "$ARCHIVE" "$FOLDER"
+
+          # Store as step output — bulletproof for downstream steps
+          echo "name=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+          echo "Created: ${ARCHIVE} ($(du -h "$ARCHIVE" | cut -f1))"
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Glance Widgets v${{ steps.version.outputs.version }}
+          body: |
+            ## Glance Widgets v${{ steps.version.outputs.version }}
+
+            ### Installation
+
+            ```sh
+            bash <(curl -sL https://raw.githubusercontent.com/${{ github.repository }}/main/glance.sh) --install
+            ```
+
+            ### Update from previous version
+
+            ```sh
+            bash <(curl -sL https://raw.githubusercontent.com/${{ github.repository }}/main/glance.sh) --update
+            ```
+          files: ${{ steps.archive.outputs.name }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
